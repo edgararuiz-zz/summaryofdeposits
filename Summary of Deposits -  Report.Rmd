@@ -1,0 +1,193 @@
+---
+title: "16 years of FDIC Deposit Data - Model Selection"
+author: "Edgar Ruiz"
+date: "March 4, 2016"
+output: html_document
+---
+
+#Background
+
+Banks and other financial institutions submit to the FDIC a report of all of the money held for deposit at each of their branches.  A compilation of the reports from each bank is available as a single data set in the FDIC's website.
+
+This report will detail the steps taken to analyze the FDIC 'Summary of Deposit' for each data set between 2000 and 2015.
+
+#The forcasting models
+
+This report is focused in the selection of the forecasting models used to predict the deposit, banks and branch levels.  
+
+The ARIMA model seemed to be the most appropriate for all 3.  The selection will then be based in the AIC score and the distribution of the residuals.
+
+# Exploratory analysis
+
+Loading needed libraries
+```{r, warning=FALSE, message=FALSE}
+library(scales)
+library(data.table)
+library(stringr)
+library(plyr)
+library(ggplot2)
+library(maps)
+library(ggthemes)
+library(ggExtra)
+library(forecast)
+```
+
+Loading all the files into a single data set
+
+```{r, warning=FALSE, message=FALSE}
+get.files <- list.files()
+sod.location <- str_detect(get.files, "ALL_")
+sod.files <- get.files[sod.location]
+all.sod <- NULL
+for(j in 1:length(sod.files)){all.sod  <- rbind(as.data.frame(fread(sod.files[j])),all.sod)}
+
+#---------- The totals of deposits per branch field had commas and was in Thousands----------------
+all.sod$DEPSUMBR <- str_replace_all(all.sod$DEPSUMBR, ",","")
+all.sod$DEPSUMBR <- sapply(all.sod$DEPSUMBR, as.numeric)
+all.sod$DEPSUMBR <- all.sod$DEPSUMBR * 1000 
+# --Combined institutions that belong to the same holding company into the 'institution' field-----
+all.sod$institution <- all.sod$NAMEHCR
+all.sod$institution[is.null(all.sod$institution)] <- all.sod$NAMEFULL[is.null(all.sod$institution)]
+all.sod$institution[all.sod$institution==""] <- all.sod$NAMEFULL[all.sod$institution==""]
+all.sod$institution <- sapply(all.sod$institution, str_to_upper)
+current.sod <- all.sod[all.sod$ADDRESS!=all.sod$ADDRESBR,]
+
+#------------------------- Annual deposit totals by State -----------------------------------------
+sod.by.state <-aggregate(DEPSUMBR~YEAR+STALPBR, data=current.sod, FUN="sum")
+sod.by.state$DEPSUMBR <- sod.by.state$DEPSUMBR  / 100000
+#----------------------------------- Annual bank count --------------------------------------------
+sod.by.year.banks <- count(all.sod, c("YEAR", "institution"))
+sod.by.year.banks <-  sod.by.year.banks[,c(1,2)]
+sod.by.year.banks <-  count(sod.by.year.banks , c("YEAR"))
+#----------------------------------- Annual branch count -----------------------------------------
+sod.by.year.branches <- count(all.sod, c("YEAR"))
+#---------------------- Annual deposit totals -----------------------------------------------------
+sod.by.year.deposits <- aggregate(DEPSUMBR~YEAR, data=all.sod, FUN="sum")
+sod.by.year.deposits$y <-  sod.by.year.deposits$DEPSUMBR / 10000000000
+#---------------------- State conversion file -----------------------------------------------------
+states <- read.csv("states.csv", header = TRUE)
+
+print(paste("Total files: " , length(sod.files)));print(paste("Total records read:", format( nrow(all.sod),big.mark=",",scientific=FALSE))); print(paste("Total unique banks", format(length(unique(all.sod$NAMEFULL)),big.mark=",",scientific=FALSE)))
+```
+
+
+The following plots will show the general trend for each of the 3 variables we will based the models on:  
+
+```{r, fig.width=10, fig.height=3}
+par(mfrow=c(1,3))
+plot(DEPSUMBR~YEAR, sod.by.year.deposits, type="l", main="Total deposits by year", ylab="Total deposits at branch", xlab="Year")
+plot(freq~YEAR, sod.by.year.banks, type="l", main="Total Banking Institutions by year", ylab="Count", xlab="Year")
+plot(freq~YEAR, sod.by.year.branches, type="l", main="Total Branches by year", ylab="Count", xlab="Year")
+```
+
+##Comments
+Above is a quick view of the general trend of the numbers. Each has a unique trend: the trend for deposits is ascending, the one for banking institutions is descending and the one for branches is a curve, with a peak in 2009.  So each will need to be analyzed separately for model selection.
+
+# Model Selection
+
+The models will be selected based on 3 criteria:
+
+- The lowest AIC possible
+
+- The residuals closest to a normal curve in the histogram
+
+- The residuals closest to the Quantile-Quantile line
+
+The possible adjustments to the ARIMA models is the 3 order numbers (p,d,q).  Close to a 'step-wise' approach for linear models, I will loop over each of the possible order numbers to attempt and find the best fitting model.
+
+The selected model is highlighted in blue.  In the following sections we'll start with the code, followed the residual analysis for each order combination and the lastly the comments for each of the 3 variables.
+
+## Deposits
+
+```{r, fig.width=10, fig.height=3}
+par(mfrow=c(1,4))
+deposit.models <- NULL
+current.ts <- ts(sod.by.year.deposits$DEPSUMBR)
+for(j in 1:2){  for(i in 1:3){  for(h in 1:1){
+      current.model <- arima(current.ts, order=c(j,i,h))
+      deposit.models <- rbind(deposit.models, c(j,i,h, round(current.model$aic,digits = 2)))
+}}}
+deposit.models <- as.data.frame(deposit.models)
+colnames(deposit.models) <- c("p", "d","q","AIC")
+deposit.models$AIC <- as.numeric(as.character(deposit.models$AIC))
+deposit.models <- deposit.models[order(deposit.models$AIC),]
+for(l in 1:nrow(deposit.models)){
+  current.model <- arima(current.ts, order=c(deposit.models$p[l],deposit.models$d[l],deposit.models$q[l]))
+  title <- paste("Order: ", deposit.models$p[l],deposit.models$d[l],deposit.models$q[l],"AIC:",deposit.models$AIC[l] )
+  if(deposit.models$p[l]==1 & deposit.models$d[l]==1 & deposit.models$q[l]==1)
+      {highlight<-"blue"} else {highlight<-"white"}
+  hist(current.model$residuals, main=title, col=highlight)
+  qqnorm(current.model$residuals)
+  qqline(current.model$residuals)
+}
+```
+
+### Comments
+
+The first three combinations with the lowest AIC had less than ideal residual distributions.  The fourth and fifth look better.  Eventually choose the fifth which had a more normal distribution, even though it had a higher AIC.  
+
+
+## Banks
+
+```{r, fig.width=10, fig.height=3}
+par(mfrow=c(1,4))
+bank.models <- NULL
+current.ts <- ts(sod.by.year.banks$freq)
+for(j in 2:3){for(i in 2:3){for(h in 1:3){
+      current.model <- arima(current.ts, order=c(j,i,h))
+      bank.models <- rbind(bank.models, c(j,i,h, round(current.model$aic,digits = 2)))
+}}}
+bank.models <- as.data.frame(bank.models)
+colnames(bank.models) <- c("p", "d","q","AIC")
+bank.models$AIC <- as.numeric(as.character(bank.models$AIC))
+bank.models$AIC <- as.numeric(as.character(bank.models$AIC))
+bank.models <- bank.models[order(bank.models$AIC),]
+for(l in 1:nrow(bank.models)){
+  current.model <- arima(current.ts, order=c(bank.models$p[l],bank.models$d[l],bank.models$q[l]))
+  title <- paste("Order: ", bank.models$p[l],bank.models$d[l],bank.models$q[l],"AIC:",bank.models$AIC[l] )
+  if(bank.models$p[l]==2 & bank.models$d[l]==2 & bank.models$q[l]==1)
+      {highlight<-"blue"} else {highlight<-"white"}
+  hist(current.model$residuals, main=title, col = highlight)
+  qqnorm(current.model$residuals)
+  qqline(current.model$residuals)
+}
+```
+
+### Comments
+
+This one was interesting, the trend is obvious but no model yielded a curved distribution.  The closest one was 2,2,1 which is the model selected.
+
+## Branches
+
+```{r, fig.width=10, fig.height=3}
+par(mfrow=c(1,4))
+branches.models <- NULL
+current.ts <- ts(sod.by.year.branches$freq)
+for(j in 0:2){for(i in 0:2){for(h in 0:2){
+      current.model <- arima(current.ts, order=c(j,i,h))
+      branches.models <- rbind(branches.models, c(j,i,h, round(current.model$aic,digits = 2)))
+}}}
+branches.models <- as.data.frame(branches.models)
+colnames(branches.models) <- c("p", "d","q","AIC")
+branches.models$AIC <- as.numeric(as.character(branches.models$AIC))
+branches.models$AIC <- as.numeric(as.character(branches.models$AIC))
+branches.models <- branches.models[order(branches.models$AIC),]
+for(l in 1:12){
+  current.model <- arima(current.ts, order=c(branches.models$p[l],branches.models$d[l],branches.models$q[l]))
+  title <- paste("Order: ", branches.models$p[l],branches.models$d[l],branches.models$q[l],"AIC:",branches.models$AIC[l] )
+    if(branches.models$p[l]==2 & branches.models$d[l]==2 & branches.models$q[l]==1)
+        {highlight<-"blue"} else {highlight<-"white"}
+  hist(current.model$residuals, main=title, col=highlight)
+  qqnorm(current.model$residuals)
+  qqline(current.model$residuals)
+}
+```
+
+
+### Comments
+
+In the case for branches, the eighth model was selected.  It had the best residual distribution with the lowest AIC score. 
+
+When this model is applied for predictions, it has a high upper limit for a 95% confidence interval.  Taking into account what we're seeing in the industry, this highly unlikely.  The model is considering this as a possibility due to the fact that for the first half of the 2000's the branch numbers were on the rise, but after 2009 the downward trend will more likely remain if not accelerate as the lowest limit of the confidence interval seems to suggest.
+
+

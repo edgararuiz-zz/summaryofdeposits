@@ -1,0 +1,469 @@
+---
+title: "16 years of FDIC Deposit Data"
+author: "Edgar Ruiz"
+date: "March 4, 2016"
+output: html_document
+---
+
+##Background
+
+Banks and other financial institutions submit to the FDIC a report of all of the money held for deposit at each of their branches.  A compilation of the reports from each bank is available as a single dataset in the FDIC's website.
+
+This report will detail the steps taken to analyze the FDIC 'Summary of Deposit' for each dataset between 2000 and 2015.
+
+##The analysis
+
+Loading the needed libraries to run the code 
+
+```{r, warning=FALSE, message=FALSE}
+library(scales)
+library(data.table)
+library(stringr)
+library(plyr)
+library(ggplot2)
+library(maps)
+library(ggthemes)
+library(ggExtra)
+library(forecast)
+```
+
+###Initial data load
+```{r, warning=FALSE, message=FALSE}
+
+get.files <- list.files()
+sod.location <- str_detect(get.files, "ALL_")
+sod.files <- get.files[sod.location]
+
+all.sod <- NULL
+for(j in 1:length(sod.files)){all.sod  <- rbind(as.data.frame(fread(sod.files[j])),all.sod)}
+
+#---------- The totals of deposits per branch field had commas and was in Thousands----------------
+all.sod$DEPSUMBR <- str_replace_all(all.sod$DEPSUMBR, ",","")
+all.sod$DEPSUMBR <- sapply(all.sod$DEPSUMBR, as.numeric)
+all.sod$DEPSUMBR <- all.sod$DEPSUMBR * 1000 
+# --Combined institutions that belong to the same holding company into the 'institution' field-----
+all.sod$institution <- all.sod$NAMEHCR
+all.sod$institution[is.null(all.sod$institution)] <- all.sod$NAMEFULL[is.null(all.sod$institution)]
+all.sod$institution[all.sod$institution==""] <- all.sod$NAMEFULL[all.sod$institution==""]
+all.sod$institution <- sapply(all.sod$institution, str_to_upper)
+current.sod <- all.sod[all.sod$ADDRESS!=all.sod$ADDRESBR,]
+#------------------------- Annual deposit totals by State -----------------------------------------
+sod.by.state <-aggregate(DEPSUMBR~YEAR+STALPBR, data=current.sod, FUN="sum")
+sod.by.state$DEPSUMBR <- sod.by.state$DEPSUMBR  / 100000
+#----------------------------------- Annual bank count --------------------------------------------
+sod.by.year.banks <- count(all.sod, c("YEAR", "institution"))
+sod.by.year.banks <-  sod.by.year.banks[,c(1,2)]
+sod.by.year.banks <-  count(sod.by.year.banks , c("YEAR"))
+
+#----------------------------------- Annual branch count -----------------------------------------
+sod.by.year.branches <- count(all.sod, c("YEAR"))
+#---------------------- Annual deposit totals -----------------------------------------------------
+sod.by.year.deposits <- aggregate(DEPSUMBR~YEAR, data=all.sod, FUN="sum")
+sod.by.year.deposits$y <-  sod.by.year.deposits$DEPSUMBR / 10000000000
+#---------------------- State conversion file -----------------------------------------------------
+states <- read.csv("states.csv", header = TRUE)
+
+```
+
+
+## Infographic
+
+### Loading predictive models
+
+The following code prepares 3 ARIMA forcasting models which attempt to predict the levels of deposits, banking institutions and branches for the next 5 years.  The model selection for each is detailed in a different R Markup document.
+
+
+Preparing model for deposit levels
+```{r}
+deposits.ts <- ts(sod.by.year.deposits$y)
+deposits.diff <- (diff(deposits.ts))*1.2
+deposits.diff.total <- diff(ts(sod.by.year.deposits$DEPSUMBR))
+a2 <- arima(deposits.ts, order=c(1,1,1))
+a2.pred <- predict(a2, n.ahead = 5)
+u <- a2.pred$pred + (1.96*a2.pred$se)
+l <- a2.pred$pred - (1.96*a2.pred$se)
+years <- c(2016:2020)
+deposits.predict <- as.data.frame(cbind(years,l , a2.pred$pred, u))
+colnames(deposits.predict) <- c("year","lower","fit","upper")
+c2015 <- sod.by.year.deposits[sod.by.year.deposits=="2015",c(1,3,3,3)]
+colnames(c2015) <- c("year","lower","fit","upper")
+deposits.predict <- rbind(deposits.predict, c2015)
+
+```
+
+Preparing model for banking institution levels
+```{r} 
+
+sod.by.year.banks$y <- sod.by.year.banks$freq/8
+banks.ts <- ts(sod.by.year.banks$freq)
+
+a2 <- arima(banks.ts, order=c(2,2,1))
+
+
+
+a2.pred <- predict(a2, n.ahead = 5)
+u <- a2.pred$pred + (1.96*a2.pred$se)
+l <- a2.pred$pred - (1.96*a2.pred$se)
+years <- c(2016:2020)
+banks.predict <- as.data.frame(cbind(years,l , a2.pred$pred, u))
+colnames(banks.predict) <- c("year","label.lower","label.fit","label.upper")
+
+banks.predict$lower <- banks.predict$label.lower/8
+banks.predict$fit <- banks.predict$label.fit/8
+banks.predict$upper <- banks.predict$label.upper/8
+
+c2015 <- sod.by.year.banks[sod.by.year.banks=="2015",c(1,2,2,2,3,3,3)]
+colnames(c2015) <- c("year","label.lower","label.fit","label.upper", "lower","fit","upper")
+banks.predict <- rbind(banks.predict, c2015)
+
+```
+
+Preparing model for branch levels
+```{r} 
+sod.by.year.branches$y <- sod.by.year.branches$freq/80
+
+branches.ts <- ts(sod.by.year.branches$freq)
+a2 <- arima(branches.ts, order=c(2,2,1))
+
+
+
+a2.pred <- predict(a2, n.ahead = 5)
+u <- a2.pred$pred + (1.96*a2.pred$se)
+l <- a2.pred$pred - (1.96*a2.pred$se)
+years <- c(2016:2020)
+branches.predict <- as.data.frame(cbind(years,l , a2.pred$pred, u))
+colnames(branches.predict) <- c("year","label.lower","label.fit","label.upper")
+
+branches.predict$lower <- branches.predict$label.lower/80
+branches.predict$fit <- branches.predict$label.fit/80
+branches.predict$upper <- branches.predict$label.upper/80
+
+c2015 <- sod.by.year.branches[sod.by.year.branches=="2015",c(1,2,2,2,3,3,3)]
+
+colnames(c2015) <- c("year","label.lower","label.fit","label.upper", "lower","fit","upper")
+branches.predict <- rbind(branches.predict, c2015)
+
+
+
+```
+
+
+
+### Loading Functions
+```{r, warning=FALSE, message=FALSE}
+#------------------------------------- Axis Labels ------------------------------------------------
+abbrev_number <-  function(x){
+  new_vector <- NULL
+  for(j in 1 : length(x)){
+    if(is.na(x[j])){0 ; x[j]<-0}
+    if(x[j]>=1000){new_number <- paste(round(x[j] / 1000,1),"K", sep="")}
+    if(x[j]>=1000000){new_number <- paste(round(x[j] / 1000000,1),"M", sep="")}
+    if(x[j]>=1000000000){new_number <- paste(round(x[j] / 1000000000000,1),"T", sep="")}
+    if(x[j]>=1000000000000){new_number <- paste(round(x[j] / 1000000000000,1),"T", sep="")}
+    new_vector <- c(new_vector,new_number)
+  }
+return(new_vector)}
+
+#------------------------------------Year scale 'x' axis location ---------------------------------
+year.x <- function(year){
+  timeline.length <- 3200
+  timeline.left <- 180
+  timeline.start <- 2000
+  timeline.end <- 2020
+  year.mid <- timeline.length / (timeline.end-timeline.start)
+  year.location <- year - timeline.start
+  return((year.mid*year.location)+timeline.left)  }
+
+```
+
+
+### Creating the graph
+
+Setting up the colors and plot options
+```{r}
+color.background <- "brown"
+color.theme1 <- "white"
+color.theme2 <- "orange"
+color.theme3 <- "yellow"
+color.theme4 <- "black"
+
+timeline.top <- 1200
+y.adjustment <- timeline.top-325
+
+year.data <- c("00", "05","10","15", "20")
+year.locations <- c(year.x(2000),year.x(2005),year.x(2010),year.x(2015),year.x(2020))
+
+ig <- ggplot() + theme_pander() + removeGrid()
+ig <- ig + theme(axis.title = element_blank())
+ig <- ig + theme(axis.text.x = element_blank())
+ig <- ig + theme(axis.text.y = element_blank())
+ig <- ig + theme(axis.ticks = element_blank())
+ig <- ig + theme(axis.line = element_blank())
+ig <- ig + theme(legend.position ="none")
+ig <- ig + theme(panel.background = element_rect(fill = color.background))
+```
+
+Graph main title and captions
+```{r}
+ig <- ig + geom_text(aes(x=1, y=2400, label="FDIC Deposit Data and Forecast", hjust=0), size=8, color=color.theme1)
+ig <- ig + geom_text(aes(x=1, y=2300, label="2000-2020", hjust=0), size=6, color=color.theme1)
+ig <- ig + geom_text(aes(x=3700, y=-800, label="Edgar Ruiz - March, 2016", hjust=1), size=4, color=color.theme1)
+ig <- ig + geom_text(aes(x=3700, y=-850, label="Source: FDIC.gov", hjust=1), size=4, color=color.theme1)
+```
+
+### Deposit, Bank and Branch area graphs
+
+Deposit amount levels and predictions
+```{r}
+ig <- ig + geom_area(aes(x=year.x(sod.by.year.deposits$YEAR), y=sod.by.year.deposits$y+y.adjustment), fill=color.theme2)
+ig <- ig + geom_area(aes(x=year.x(deposits.predict$year), y=deposits.predict$upper+y.adjustment), fill=color.theme2)
+ig <- ig + geom_area(aes(x=year.x(deposits.predict$year), y=deposits.predict$fit+y.adjustment), fill=color.theme3)
+ig <- ig + geom_area(aes(x=year.x(deposits.predict$year), y=deposits.predict$lower+y.adjustment), fill=color.background)
+ig <- ig + geom_text(aes(x=year.x(sod.by.year.deposits$YEAR), y=sod.by.year.deposits$y+y.adjustment+50, label=paste("$",abbrev_number(sod.by.year.deposits$DEPSUMBR), sep="")), size=3, color=color.theme3)
+ig <- ig + geom_rect(aes(xmin=year.x(2000),x=year.x(2000), xmax=year.x(2020), y=timeline.top,  ymin=timeline.top, ymax=0), fill=color.background)
+ig <- ig + geom_rect(aes(xmin=year.x(2000),x=year.x(2000), xmax=year.x(2015), y=timeline.top,  ymin=timeline.top, ymax=0), fill=color.theme3)
+predict.labels <- deposits.predict[deposits.predict$year==2016 | deposits.predict$year==2018 | deposits.predict$year==2020,]
+ig <- ig + geom_text(aes(x=year.x(predict.labels$year), y=predict.labels$upper+y.adjustment+50, label=paste("$" , abbrev_number(predict.labels$upper*10000000000), sep="")), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(predict.labels$year), y=predict.labels$lower+y.adjustment-50, label = paste("$", abbrev_number(predict.labels$lower*10000000000),sep="")), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(2010), y=y.adjustment+600, label="FDIC Deposits"), size=5.5, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(2010)+0.7, y=y.adjustment+600+0.7, label="FDIC Deposits"), size=5.5, color=color.background)
+```
+
+Bank institutions levels and predictions
+```{r}
+ig <- ig + geom_area(aes(x=year.x(sod.by.year.banks$YEAR), y=sod.by.year.banks$y + y.adjustment - 720),fill=color.background)
+ig <- ig + geom_area(aes(x=year.x(banks.predict$year), y=banks.predict$upper + y.adjustment - 720), fill=color.theme2)
+ig <- ig + geom_area(aes(x=year.x(banks.predict$year), y=banks.predict$fit + y.adjustment - 720), fill=color.theme3)
+ig <- ig + geom_area(aes(x=year.x(banks.predict$year), y=banks.predict$lower + y.adjustment - 720), fill=color.background)
+ig <- ig + geom_text(aes(x=year.x(sod.by.year.banks$YEAR), y=sod.by.year.banks$y + y.adjustment - 770, label=abbrev_number(sod.by.year.banks$freq)), size=3, color=color.theme3)
+bank.labels <- banks.predict[banks.predict$year==2016 | banks.predict$year==2018 | banks.predict$year==2020,]
+ig <- ig + geom_text(aes(x=year.x(bank.labels$year), y=bank.labels$upper+y.adjustment-680, label=abbrev_number(bank.labels$label.upper)), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(bank.labels$year), y=bank.labels$lower+y.adjustment-770, label=abbrev_number(bank.labels$label.lower)), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(2010), y=y.adjustment+240, label="Number of Banks"), size=5, color=color.theme1)
+ig <- ig + geom_text(aes(x=year.x(2010)+0.7, y=y.adjustment+240+0.7, label="Number of Banks"), size=5, color=color.background)
+```
+
+Branch levels and predictions
+```{r}
+branch.offset <- 700
+branch.seq <- seq(1, nrow(sod.by.year.branches), 2)
+ig <- ig + geom_area(aes(x=year.x(sod.by.year.branches$YEAR), y=sod.by.year.branches$y-branch.offset),fill=color.theme2)
+ig <- ig + geom_rect(aes(xmin=year.x(2000),x=year.x(2000), xmax=year.x(2015), y=0 , ymin=min(sod.by.year.branches$y)-branch.offset-250, ymax=0), fill=color.background)
+ig <- ig + geom_area(aes(x=year.x(branches.predict$year), y=branches.predict$fit-branch.offset), fill=color.theme3)
+ig <- ig + geom_area(aes(x=year.x(branches.predict$year), y=branches.predict$lower-branch.offset), fill=color.background)
+
+ig <- ig + geom_text(aes(x=year.x(sod.by.year.branches$YEAR[branch.seq]), y=sod.by.year.branches$y[branch.seq]-branch.offset+30, label=abbrev_number(sod.by.year.branches$freq[branch.seq])), size=3, color=color.theme3)
+
+ig <- ig + geom_text(aes(x=year.x(sod.by.year.branches$YEAR[branch.seq+1]), y=sod.by.year.branches$y[branch.seq+1]-branch.offset+70, label=abbrev_number(sod.by.year.branches$freq[branch.seq+1])), size=3, color=color.theme3)
+
+ig <- ig + geom_segment(aes(x=year.x(sod.by.year.branches$YEAR[branch.seq+1]),xend=year.x(sod.by.year.branches$YEAR[branch.seq+1]), y=sod.by.year.branches$y[branch.seq+1]-branch.offset+50, yend=sod.by.year.branches$y[branch.seq+1]-branch.offset), size=1, color=color.theme3)
+branch.labels <- branches.predict[branches.predict$year==2016 | branches.predict$year==2018 | branches.predict$year==2020,]
+ig <- ig + geom_text(aes(x=year.x(branch.labels$year), y=branch.labels$fit-branch.offset+50, label=abbrev_number(branch.labels$label.fit)), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(branch.labels$year), y=branch.labels$lower-branch.offset-50, label=abbrev_number(branch.labels$label.lower)), size=3, color=color.theme3)
+ig <- ig + geom_text(aes(x=year.x(2008), y=branch.offset-400, label="Number of Branches"), size=5.5, color=color.theme2)
+ig <- ig + geom_text(aes(x=year.x(2008)+0.7, y=branch.offset-400+0.7, label="Number of Branches"), size=5.5, color=color.background)
+
+```
+
+Year-over-year change bar graphs
+```{r}
+change.years <- c(2001:2015)
+change.adjustment <- 50
+change.width <- 7.5
+change.color <- color.theme3
+ig <- ig + geom_segment(aes(x=year.x(change.years[1]),xend=year.x(change.years[1]), y=timeline.top+deposits.diff[change.years[1]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[2]),xend=year.x(change.years[2]), y=timeline.top+deposits.diff[change.years[2]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[3]),xend=year.x(change.years[3]), y=timeline.top+deposits.diff[change.years[3]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[4]),xend=year.x(change.years[4]), y=timeline.top+deposits.diff[change.years[4]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[5]),xend=year.x(change.years[5]), y=timeline.top+deposits.diff[change.years[5]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[6]),xend=year.x(change.years[6]), y=timeline.top+deposits.diff[change.years[6]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[7]),xend=year.x(change.years[7]), y=timeline.top+deposits.diff[change.years[7]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[8]),xend=year.x(change.years[8]), y=timeline.top+deposits.diff[change.years[8]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[9]),xend=year.x(change.years[9]), y=timeline.top+deposits.diff[change.years[9]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[10]),xend=year.x(change.years[10]), y=timeline.top+deposits.diff[change.years[10]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[11]),xend=year.x(change.years[11]), y=timeline.top+deposits.diff[change.years[11]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[12]),xend=year.x(change.years[12]), y=timeline.top+deposits.diff[change.years[12]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[13]),xend=year.x(change.years[13]), y=timeline.top+deposits.diff[change.years[13]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[14]),xend=year.x(change.years[14]), y=timeline.top+deposits.diff[change.years[14]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+ig <- ig + geom_segment(aes(x=year.x(change.years[15]),xend=year.x(change.years[15]), y=timeline.top+deposits.diff[change.years[15]-2000]+change.adjustment,  yend=timeline.top+change.adjustment), size=change.width, color=change.color)
+```
+
+Timeline labels 
+```{r}
+
+# Year timeline labels
+ig <- ig + geom_segment(aes(x=year.x(2000),y=timeline.top, xend=year.x(2020), yend=timeline.top), size=3, color=color.theme1)
+ig <- ig + geom_point(aes(x=year.locations, y=timeline.top), stat="identity", size = 10, color=color.theme1)
+ig <- ig + geom_point(aes(x=year.locations, y=timeline.top), stat="identity", size = 8, color=color.background)
+ig <- ig + geom_segment(aes(x=year.x(2000),y=timeline.top, xend=year.x(2020)-10, yend=timeline.top), size=1.5, color=color.background)
+ig <- ig + geom_text(aes(x=year.locations, y=timeline.top, label=year.data), size=4, color=color.theme1)
+ig <- ig + geom_text(aes(x=10, y=timeline.top, label="Year"), size=4, color=color.theme1)
+
+# Year timeline labels
+timeline.top2 <- timeline.top - 1080
+ig <- ig + geom_segment(aes(x=year.x(2000),y=timeline.top2, xend=year.x(2020), yend=timeline.top2), size=3, color=color.theme1)
+ig <- ig + geom_point(aes(x=year.locations, y=timeline.top2), stat="identity", size = 10, color=color.theme1)
+ig <- ig + geom_point(aes(x=year.locations, y=timeline.top2), stat="identity", size = 8, color=color.background)
+ig <- ig + geom_segment(aes(x=year.x(2000),y=timeline.top2, xend=year.x(2020)-10, yend=timeline.top2), size=1.5, color=color.background)
+ig <- ig + geom_text(aes(x=year.locations, y=timeline.top2, label=year.data), size=4, color=color.theme1)
+ig <- ig + geom_text(aes(x=10, y=timeline.top2, label="Year"), size=4, color=color.theme1)
+```
+
+### USA Maps
+
+```{r}
+#-------------------- Comparing and keeping 2000, 2005 and 2015 -----------------------------------
+colnames(sod.by.state) <- c("year","state","deposits")
+sod.by.state <- sod.by.state[sod.by.state$year==2000 | sod.by.state$year==2005 | sod.by.state$year==2010 | sod.by.state$year==2015 ,]
+sod.by.state.previous <- sod.by.state
+sod.by.state.previous$year <- sod.by.state.previous$year+5
+sod.by.state.previous <- sod.by.state.previous[sod.by.state.previous$year<=2015,]
+sod.by.state <- merge(x=sod.by.state, y=sod.by.state.previous, by=c("year","state"))
+colnames(sod.by.state) <- c("year","state", "deposits","previous")
+sod.by.state$difference <- sod.by.state$deposits - sod.by.state$previous
+sod.by.state$change <- sod.by.state$difference / sod.by.state$previous
+#------------------------- Removing US territories so as to keep the 50 states --------------------
+sod.by.state <- sod.by.state[sod.by.state$state!="AS",]
+sod.by.state <- sod.by.state[sod.by.state$state!="PW",]
+sod.by.state <- sod.by.state[sod.by.state$state!="PR",]
+sod.by.state <- sod.by.state[sod.by.state$state!="FM",]
+sod.by.state <- sod.by.state[sod.by.state$state!="VI",]
+sod.by.state <- sod.by.state[sod.by.state$state!="MH",]
+sod.by.state <- sod.by.state[sod.by.state$state!="GU",]
+sod.by.state <- sod.by.state[sod.by.state$state!="MA",]
+sod.by.state <- sod.by.state[sod.by.state$state!="MP",]
+```
+
+Setting up the poligons for all 50 states and determining the ranking
+```{r}
+alaska_map <- map_data("world")
+alaska_map <- alaska_map[is.na(alaska_map$subregion)==FALSE,]
+alaska_map <- alaska_map[alaska_map$subregion=="Alaska",]
+alaska_map$region <- "AK"
+alaska_map <- alaska_map[alaska_map$long<0,]
+alaska_map$long <- alaska_map$long * 8
+alaska_map$lat <- alaska_map$lat * 5
+alaska_map$long <- alaska_map$long   + 1900
+alaska_map$lat <- alaska_map$lat - 800
+
+hawaii_map <- map_data("world")
+hawaii_map <- hawaii_map[is.na(hawaii_map$subregion)==FALSE,]
+hawaii_map <- hawaii_map[hawaii_map$subregion=="Hawaii",]
+hawaii_map$region <- "HI"
+hawaii_map$long <- hawaii_map$long * 50
+hawaii_map$lat <- hawaii_map$lat * 30
+hawaii_map$long <- hawaii_map$long   + 8100
+hawaii_map$lat <- hawaii_map$lat - 1100
+
+
+states_map <- map_data("state")
+states_map <- merge(x=states_map, y=states, by.x = "region", by.y="match1")
+states_map$region <- states_map$abbrev
+states_map$long <- states_map$long * 20
+states_map$lat <- states_map$lat * 12
+states_map$long <- states_map$long   + 2500
+states_map$lat <- states_map$lat - 700
+```
+
+Creating map plots
+```{r}
+#------------------------------------------ 2005 --------------------------------------------------
+state.2005 <-sod.by.state[sod.by.state$year==2005,]
+state.2005$rank <- rank(state.2005$change, ties.method="first")
+
+ig <- ig + geom_map(data=state.2005 , aes(map_id=state,fill = rank),map=states_map, color=color.theme1, size=0.1)+expand_limits(x = states_map$long, y = states_map$lat)
+ig <- ig +geom_map(data=state.2005 , aes(map_id=state,fill = rank),map=alaska_map, color=color.theme1, size=0.1)+expand_limits(x = alaska_map$long, y = alaska_map$lat)
+ig <- ig +geom_map(data=state.2005 , aes(map_id=state,fill = rank),map=hawaii_map, color=color.theme1, size=0.1)+expand_limits(x = hawaii_map$long, y = hawaii_map$lat)
+
+
+#------------------------------------------ 2010 --------------------------------------------------
+states_map$long <- states_map$long   + 1200
+alaska_map$long <- alaska_map$long   + 1200
+hawaii_map$long <- hawaii_map$long   + 1200
+state.2010 <-sod.by.state[sod.by.state$year==2010,]
+state.2010$rank <- rank(state.2010$change, ties.method="first")
+ig <- ig +geom_map(data=state.2010 , aes(map_id=state,fill = rank),map=states_map, color=color.theme1, size=0.1)+expand_limits(x = states_map$long, y = states_map$lat)
+ig <- ig +geom_map(data=state.2010 , aes(map_id=state,fill = rank),map=alaska_map, color=color.theme1, size=0.1)+expand_limits(x = alaska_map$long, y = alaska_map$lat)
+ig <- ig +geom_map(data=state.2010 , aes(map_id=state,fill = rank),map=hawaii_map, color=color.theme1, size=0.2)+expand_limits(x = hawaii_map$long, y = hawaii_map$lat)
+#------------------------------------------ 2015 --------------------------------------------------
+states_map$long <- states_map$long   + 1200
+alaska_map$long <- alaska_map$long   + 1200
+hawaii_map$long <- hawaii_map$long   + 1200
+state.2015 <-sod.by.state[sod.by.state$year==2015,]
+state.2015$rank <- rank(state.2015$change, ties.method="first")
+state.2015$zscore <- (state.2015$change - mean(state.2015$change))/ sd(state.2015$change)
+ig <- ig +geom_map(data=state.2015 , aes(map_id=state,fill = rank),map=states_map, color=color.theme1, size=0.1)+expand_limits(x = states_map$long, y = states_map$lat)
+ig <- ig +geom_map(data=state.2015 , aes(map_id=state,fill = rank),map=alaska_map, color=color.theme1, size=0.1)+expand_limits(x = alaska_map$long, y = alaska_map$lat)
+ig <- ig +geom_map(data=state.2015 , aes(map_id=state,fill = rank),map=hawaii_map, color=color.theme1, size=0.1)+expand_limits(x = hawaii_map$long, y = hawaii_map$lat)
+ig <- ig + scale_fill_gradient2( mid = color.theme2, low=color.background, high = color.theme3, midpoint = 25)
+ig <- ig + geom_text(aes(x=c(500,1750,2900), y=-600, label= c("2000 - 2005","2005 - 2010","2010 - 2015")), size=4, color=color.theme1)
+
+ig <- ig + geom_text(aes(x=1800, y=-10, label= "5-year % growth - Ranked by State"), size=6, color=color.theme1)
+ig <- ig + geom_text(aes(x=year.x(change.years), y=timeline.top+change.adjustment+30, label=paste("", abbrev_number(deposits.diff.total),  sep="")), size=2.5, color=color.theme4)
+ig <- ig + geom_text(aes(x=year.x(max(change.years))+500, y=timeline.top+change.adjustment+30, label="Year-over-year $ growth"), size=3.5, color=color.theme1)
+ig <- ig + geom_segment(aes(x=year.x(max(change.years))+60, xend=year.x(max(change.years))+150,y=timeline.top+change.adjustment+30, yend=timeline.top+change.adjustment+30), size=1, color=color.theme1)
+ig <- ig + geom_segment(aes(x=year.x(max(change.years))+62, xend=year.x(max(change.years))+100,y=timeline.top+change.adjustment+30, yend=timeline.top+change.adjustment+40), size=1, color=color.theme1)
+ig <- ig + geom_segment(aes(x=year.x(max(change.years))+62, xend=year.x(max(change.years))+100,y=timeline.top+change.adjustment+30, yend=timeline.top+change.adjustment+20), size=1, color=color.theme1)
+
+#----------------------------------------- Rank legends -------------------------------------------
+legend.margin <- 1550
+ig <- ig + geom_rect(aes( xmin=legend.margin, xmax=legend.margin+100, ymin=-700, ymax=-750), color=color.theme1, fill=color.theme3)
+ig <- ig + geom_text(aes(x=legend.margin, y=-800, label="1st", hjust=0), size=3, color=color.theme1)
+ig <- ig + geom_rect(aes( xmin=legend.margin+ 150, xmax=legend.margin+250, ymin=-700, ymax=-750), color=color.theme1, fill=color.theme2)
+ig <- ig + geom_text(aes(x=legend.margin+145, y=-800, label="25th", hjust=0), size=3, color=color.theme1)
+ig <- ig + geom_rect(aes( xmin=legend.margin +300, xmax=legend.margin+400, ymin=-700, ymax=-750), color=color.theme1, fill=color.background)
+ig <- ig + geom_text(aes(x=legend.margin+295, y=-800, label="50th", hjust=0), size=3, color=color.theme1)
+```
+
+
+### Comments
+```{r}
+#----------------------------------------- Comment 1 ----------------------------------------------
+point1.x <- 140; point1.y <- 1700
+ig <- ig + geom_text(aes(x=point1.x,  y=point1.y+80, label="1", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point1.x+120, xmax=point1.x+1100, ymin=point1.y, ymax=point1.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point1.x+140,  y=point1.y+110, label="Before 2010, deposits", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point1.x+140,  y=point1.y+70, label="grew consistently between ", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point1.x+140,  y=point1.y+30, label="$300 and $500 Billion", hjust=0 ),size=4, color=color.background)
+#----------------------------------------- Comment 2 ----------------------------------------------
+point2.x <- 1750; point2.y <- 2150
+ig <- ig + geom_text(aes(x=point2.x,  y=point2.y+80, label="2", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point2.x+120, xmax=point2.x+1100, ymin=point2.y, ymax=point2.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point2.x+140,  y=point2.y+110, label="Model is 95% certain that", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point2.x+140,  y=point2.y+70, label="by 2020 deposits will reach", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point2.x+140,  y=point2.y+30, label="$12.1T-to-$14.4T", hjust=0 ),size=4, color=color.background)
+#----------------------------------------- Comment 3 ----------------------------------------------
+point3.x <- 2650; point3.y <- 1400
+ig <- ig + geom_text(aes(x=point3.x,  y=point3.y+80, label="3", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point3.x+120, xmax=point3.x+1050, ymin=point3.y, ymax=point3.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point3.x+140,  y=point3.y+110, label="Stalled growth in '10 was", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point3.x+140,  y=point3.y+70, label="followed by a $600B jump,", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point3.x+140,  y=point3.y+30, label="possible effects of QE2", hjust=0 ),size=4, color=color.background)
+#----------------------------------------- Comment 4 ----------------------------------------------
+point4.x <- 2650; point4.y <- 950
+ig <- ig + geom_text(aes(x=point4.x,  y=point4.y+80, label="4", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point4.x+120, xmax=point4.x+1100, ymin=point4.y, ymax=point4.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point4.x+140,  y=point4.y+110, label="Model shows that in 2016,", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point4.x+140,  y=point4.y+70, label="200-to-400 additional banks", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point4.x+140,  y=point4.y+30, label="will come off the list", hjust=0 ),size=4, color=color.background)
+#----------------------------------------- Comment 5 ----------------------------------------------
+point5.x <- 140; point5.y <- 700
+ig <- ig + geom_text(aes(x=point5.x,  y=point5.y+80, label="5", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point5.x+120, xmax=point5.x+1100, ymin=point5.y, ymax=point5.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point5.x+140,  y=point5.y+110, label="Branch levels declining.", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point5.x+140,  y=point5.y+70, label="Model's lower range shows", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point5.x+140,  y=point5.y+30, label="closures may accelerate ", hjust=0 ),size=4, color=color.background)
+#----------------------------------------- Comment 6 ----------------------------------------------
+point6.x <- 140; point6.y <- -850
+ig <- ig + geom_text(aes(x=point6.x,  y=point6.y+80, label="6", hjust=0 ),size=9, color=color.theme2)
+ig <- ig + geom_rect(aes( xmin=point6.x+120, xmax=point6.x+1200, ymin=point6.y, ymax=point6.y+140), color=color.theme2, fill=color.theme2)
+ig <- ig + geom_text(aes(x=point6.x+140,  y=point6.y+110, label="Growth pattern changed", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point6.x+140,  y=point6.y+70, label="during downturn, eastern", hjust=0 ),size=4, color=color.background)
+ig <- ig + geom_text(aes(x=point6.x+140,  y=point6.y+30, label="states were the most affected.   ", hjust=0 ),size=4, color=color.background)
+
+```
+
+```{r, fig.width=9, fig.height=14, warning=FALSE, message=FALSE}
+ggsave("inforgraphic.png", width=8.5, height = 14, units=("in"))
+print(ig)
+```
