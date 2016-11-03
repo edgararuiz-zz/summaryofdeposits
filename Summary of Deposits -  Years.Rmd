@@ -30,22 +30,27 @@ library(forecast)
 ###Initial data load
 ```{r, warning=FALSE, message=FALSE}
 
-get.files <- list.files()
-sod.location <- str_detect(get.files, "ALL_")
-sod.files <- get.files[sod.location]
-
-all.sod <- NULL
-for(j in 1:length(sod.files)){all.sod  <- rbind(as.data.frame(fread(sod.files[j])),all.sod)}
-
-#---------- The totals of deposits per branch field had commas and was in Thousands----------------
-all.sod$DEPSUMBR <- str_replace_all(all.sod$DEPSUMBR, ",","")
-all.sod$DEPSUMBR <- sapply(all.sod$DEPSUMBR, as.numeric)
-all.sod$DEPSUMBR <- all.sod$DEPSUMBR * 1000 
+# get.files <- list.files()
+# sod.location <- str_detect(get.files, "ALL_")
+# sod.files <- get.files[sod.location]
+# 
+# all.sod <- NULL
+# for(j in 1:length(sod.files)){all.sod  <- rbind(as.data.frame(fread(sod.files[j])),all.sod)}
+# 
+# #---------- The totals of deposits per branch field had commas and was in Thousands----------------
+# all.sod$DEPSUMBR <- str_replace_all(all.sod$DEPSUMBR, ",","")
+# all.sod$DEPSUMBR <- sapply(all.sod$DEPSUMBR, as.numeric)
+# all.sod$DEPSUMBR <- all.sod$DEPSUMBR * 1000 
 # --Combined institutions that belong to the same holding company into the 'institution' field-----
+
+load("sod.RData")
+
 all.sod$institution <- all.sod$NAMEHCR
 all.sod$institution[is.null(all.sod$institution)] <- all.sod$NAMEFULL[is.null(all.sod$institution)]
+all.sod$institution[is.na(all.sod$institution)] <- ""
 all.sod$institution[all.sod$institution==""] <- all.sod$NAMEFULL[all.sod$institution==""]
 all.sod$institution <- sapply(all.sod$institution, str_to_upper)
+
 current.sod <- all.sod[all.sod$ADDRESS!=all.sod$ADDRESBR,]
 #------------------------- Annual deposit totals by State -----------------------------------------
 sod.by.state <-aggregate(DEPSUMBR~YEAR+STALPBR, data=current.sod, FUN="sum")
@@ -181,12 +186,14 @@ year.x <- function(year){
 
 Setting up the colors and plot options
 ```{r}
+
+# ---------------------- Change colors here --------------------------
 color.background <- "brown"
 color.theme1 <- "white"
 color.theme2 <- "orange"
 color.theme3 <- "yellow"
 color.theme4 <- "black"
-
+# ---------------------------------------------------------------------
 timeline.top <- 1200
 y.adjustment <- timeline.top-325
 
